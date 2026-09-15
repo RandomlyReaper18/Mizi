@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
-import { createEmbed, successEmbed, infoEmbed, warningEmbed } from '../../utils/embeds.js';
+import { successEmbed, infoEmbed, warningEmbed } from '../../utils/embeds.js';
 import { getEconomyData, setEconomyData } from '../../utils/economy.js';
-import { withErrorHandling, createError, ErrorTypes } from '../../utils/errorHandler.js';
+import { withErrorHandling, createError, ErrorTypes, handleInteractionError } from '../../utils/errorHandler.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 
 const BLACKJACK_COOLDOWN = 3 * 60 * 1000; // 3 minutes
@@ -9,8 +9,11 @@ const NATURAL_BLACKJACK_PAYOUT = 2.5;     // payout multiplier for a natural bla
 const WIN_PAYOUT = 2.0;                   // payout multiplier for a regular win
 const ROUND_TIMEOUT = 60 * 1000;          // player has 60s per round to act
 
-const SUITS = ['♠', '♥', '♦', '♣'];
+// NOTE: plain letters, not suit symbols — embeds.js strips Extended_Pictographic
+// characters (which includes ♠♥♦♣ and 🂠) from every title/description/field.
+const SUITS = ['S', 'H', 'D', 'C']; // Spades, Hearts, Diamonds, Clubs
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const HIDDEN_CARD = '??';
 
 function createDeck() {
     const deck = [];
@@ -49,7 +52,7 @@ function formatCard(card) {
 
 function formatHand(hand, hideFirst = false) {
     if (hideFirst) {
-        return `\`🂠\` ${hand.slice(1).map(formatCard).join(' ')}`;
+        return `\`${HIDDEN_CARD}\` ${hand.slice(1).map(formatCard).join(' ')}`;
     }
     return hand.map(formatCard).join(' ');
 }
@@ -170,20 +173,20 @@ export default {
             if (playerBJ && dealerBJ) {
                 cashChange = 0;
                 resultEmbed = warningEmbed(
-                    '🤝 Push!',
+                    'Push!',
                     `Both you and the dealer had blackjack. Your **$${betAmount.toLocaleString()}** bet was returned.`
                 );
             } else if (playerBJ) {
                 const amountWon = Math.floor(betAmount * NATURAL_BLACKJACK_PAYOUT);
                 cashChange = amountWon - betAmount;
                 resultEmbed = successEmbed(
-                    '🎉 Blackjack!',
+                    'Blackjack!',
                     `You drew a natural blackjack! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
                 );
             } else {
                 cashChange = -betAmount;
                 resultEmbed = warningEmbed(
-                    '💔 Dealer Blackjack',
+                    'Dealer Blackjack',
                     `The dealer had a natural blackjack. You lost your **$${betAmount.toLocaleString()}** bet.`
                 );
             }
@@ -196,10 +199,12 @@ export default {
             return;
         }
 
-        const gameEmbed = infoEmbed('🃏 Blackjack', `Bet: $${betAmount.toLocaleString()}`);
+        const gameEmbed = infoEmbed('Blackjack', `Bet: $${betAmount.toLocaleString()}`);
         addHandFields(gameEmbed, playerHand, dealerHand, true);
 
-        await InteractionHelper.safeEditReply(interaction, { embeds: [gameEmbed], components: [buildActionRow()] });
+        const sent = await InteractionHelper.safeEditReply(interaction, { embeds: [gameEmbed], components: [buildActionRow()] });
+        if (!sent) return;
+
         const message = await interaction.fetchReply();
 
         const collector = message.createMessageComponentCollector({
@@ -211,33 +216,82 @@ export default {
         let settled = false;
 
         collector.on('collect', async (buttonInteraction) => {
-            if (buttonInteraction.customId === 'bj_hit') {
-                playerHand.push(deck.pop());
-                const playerTotal = handValue(playerHand);
+            try {
+                if (buttonInteraction.customId === 'bj_hit') {
+                    playerHand.push(deck.pop());
+                    const playerTotal = handValue(playerHand);
 
-                if (playerTotal > 21) {
-                    settled = true;
-                    collector.stop('bust');
+                    if (playerTotal > 21) {
+                        settled = true;
+                        collector.stop('bust');
 
-                    const resultEmbed = warningEmbed(
-                        '💥 Bust!',
-                        `You went over 21 and lost your **$${betAmount.toLocaleString()}** bet.`
-                    );
-                    await settleRound(resultEmbed, -betAmount);
-                    await buttonInteraction.update({ embeds: [resultEmbed], components: [buildActionRow(true)] });
+                        const resultEmbed = warningEmbed(
+                            'Bust!',
+                            `You went over 21 and lost your **$${betAmount.toLocaleString()}** bet.`
+                        );
+                        await settleRound(resultEmbed, -betAmount);
+                        await buttonInteraction.update({ embeds: [resultEmbed], components: [buildActionRow(true)] });
+                        return;
+                    }
+
+                    const updatedEmbed = infoEmbed('Blackjack', `Bet: $${betAmount.toLocaleString()}`);
+                    addHandFields(updatedEmbed, playerHand, dealerHand, true);
+                    await buttonInteraction.update({ embeds: [updatedEmbed], components: [buildActionRow()] });
                     return;
                 }
 
-                const updatedEmbed = infoEmbed('🃏 Blackjack', `Bet: $${betAmount.toLocaleString()}`);
-                addHandFields(updatedEmbed, playerHand, dealerHand, true);
-                await buttonInteraction.update({ embeds: [updatedEmbed], components: [buildActionRow()] });
-                return;
-            }
+                if (buttonInteraction.customId === 'bj_stand') {
+                    settled = true;
+                    collector.stop('stand');
 
-            if (buttonInteraction.customId === 'bj_stand') {
+                    while (handValue(dealerHand) < 17) {
+                        dealerHand.push(deck.pop());
+                    }
+
+                    const playerTotal = handValue(playerHand);
+                    const dealerTotal = handValue(dealerHand);
+
+                    let resultEmbed;
+                    let cashChange;
+
+                    if (dealerTotal > 21 || playerTotal > dealerTotal) {
+                        const amountWon = Math.floor(betAmount * WIN_PAYOUT);
+                        cashChange = amountWon - betAmount;
+                        resultEmbed = successEmbed(
+                            'You Won!',
+                            dealerTotal > 21
+                                ? `The dealer busted with **${dealerTotal}**! You won **$${amountWon.toLocaleString()}**!`
+                                : `You beat the dealer, **${playerTotal}** to **${dealerTotal}**! You won **$${amountWon.toLocaleString()}**!`
+                        );
+                    } else if (playerTotal === dealerTotal) {
+                        cashChange = 0;
+                        resultEmbed = warningEmbed(
+                            'Push!',
+                            `Both you and the dealer had **${playerTotal}**. Your **$${betAmount.toLocaleString()}** bet was returned.`
+                        );
+                    } else {
+                        cashChange = -betAmount;
+                        resultEmbed = warningEmbed(
+                            'You Lost...',
+                            `The dealer beat you, **${dealerTotal}** to **${playerTotal}**. You lost your **$${betAmount.toLocaleString()}** bet.`
+                        );
+                    }
+
+                    await settleRound(resultEmbed, cashChange);
+                    await buttonInteraction.update({ embeds: [resultEmbed], components: [buildActionRow(true)] });
+                }
+            } catch (error) {
                 settled = true;
-                collector.stop('stand');
+                collector.stop('error');
+                await handleInteractionError(buttonInteraction, error, { command: 'blackjack', source: 'blackjack.collector' });
+            }
+        });
 
+        collector.on('end', async (_collected, reason) => {
+            if (settled || reason !== 'time') return;
+
+            try {
+                // Player didn't act in time — auto-stand on their current hand.
                 while (handValue(dealerHand) < 17) {
                     dealerHand.push(deck.pop());
                 }
@@ -252,70 +306,31 @@ export default {
                     const amountWon = Math.floor(betAmount * WIN_PAYOUT);
                     cashChange = amountWon - betAmount;
                     resultEmbed = successEmbed(
-                        '🎉 You Won!',
-                        dealerTotal > 21
-                            ? `The dealer busted with **${dealerTotal}**! You won **$${amountWon.toLocaleString()}**!`
-                            : `You beat the dealer, **${playerTotal}** to **${dealerTotal}**! You won **$${amountWon.toLocaleString()}**!`
+                        "Time's Up — You Won!",
+                        `You didn't respond in time, so we auto-stood on your **${playerTotal}**. You won **$${amountWon.toLocaleString()}**!`
                     );
                 } else if (playerTotal === dealerTotal) {
                     cashChange = 0;
                     resultEmbed = warningEmbed(
-                        '🤝 Push!',
-                        `Both you and the dealer had **${playerTotal}**. Your **$${betAmount.toLocaleString()}** bet was returned.`
+                        "Time's Up — Push!",
+                        `You didn't respond in time. Your **$${betAmount.toLocaleString()}** bet was returned.`
                     );
                 } else {
                     cashChange = -betAmount;
                     resultEmbed = warningEmbed(
-                        '💔 You Lost...',
-                        `The dealer beat you, **${dealerTotal}** to **${playerTotal}**. You lost your **$${betAmount.toLocaleString()}** bet.`
+                        "Time's Up — You Lost",
+                        `You didn't respond in time, so we auto-stood on your **${playerTotal}**. You lost your **$${betAmount.toLocaleString()}** bet.`
                     );
                 }
 
                 await settleRound(resultEmbed, cashChange);
-                await buttonInteraction.update({ embeds: [resultEmbed], components: [buildActionRow(true)] });
+                await InteractionHelper.safeEditReply(interaction, {
+                    embeds: [resultEmbed],
+                    components: [buildActionRow(true)],
+                });
+            } catch (error) {
+                await handleInteractionError(interaction, error, { command: 'blackjack', source: 'blackjack.timeout' });
             }
-        });
-
-        collector.on('end', async (_collected, reason) => {
-            if (settled || reason !== 'time') return;
-
-            // Player didn't act in time — auto-stand on their current hand.
-            while (handValue(dealerHand) < 17) {
-                dealerHand.push(deck.pop());
-            }
-
-            const playerTotal = handValue(playerHand);
-            const dealerTotal = handValue(dealerHand);
-
-            let resultEmbed;
-            let cashChange;
-
-            if (dealerTotal > 21 || playerTotal > dealerTotal) {
-                const amountWon = Math.floor(betAmount * WIN_PAYOUT);
-                cashChange = amountWon - betAmount;
-                resultEmbed = successEmbed(
-                    "⏰ Time's Up — You Won!",
-                    `You didn't respond in time, so we auto-stood on your **${playerTotal}**. You won **$${amountWon.toLocaleString()}**!`
-                );
-            } else if (playerTotal === dealerTotal) {
-                cashChange = 0;
-                resultEmbed = warningEmbed(
-                    "⏰ Time's Up — Push!",
-                    `You didn't respond in time. Your **$${betAmount.toLocaleString()}** bet was returned.`
-                );
-            } else {
-                cashChange = -betAmount;
-                resultEmbed = warningEmbed(
-                    "⏰ Time's Up — You Lost",
-                    `You didn't respond in time, so we auto-stood on your **${playerTotal}**. You lost your **$${betAmount.toLocaleString()}** bet.`
-                );
-            }
-
-            await settleRound(resultEmbed, cashChange);
-            await InteractionHelper.safeEditReply(interaction, {
-                embeds: [resultEmbed],
-                components: [buildActionRow(true)],
-            });
         });
     }, { command: 'blackjack' })
 };
