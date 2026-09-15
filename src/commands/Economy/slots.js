@@ -7,14 +7,15 @@ import { InteractionHelper } from '../../utils/interactionHelper.js';
 const SLOTS_COOLDOWN = 2 * 60 * 1000; // 2 minutes
 const TWO_MATCH_MULTIPLIER = 1.5;     // consolation payout for two matching symbols
 
-// Weighted symbol table — higher weight = more common. Multiplier applies when all 3 reels match.
+// NOTE: plain text labels, not emoji — embeds.js strips Extended_Pictographic
+// characters from every title/description/field, which would blank out emoji reels.
 const SYMBOLS = [
-    { emoji: '🍒', weight: 30, multiplier: 2 },
-    { emoji: '🍋', weight: 25, multiplier: 3 },
-    { emoji: '🍇', weight: 20, multiplier: 5 },
-    { emoji: '🔔', weight: 15, multiplier: 8 },
-    { emoji: '💎', weight: 8, multiplier: 15 },
-    { emoji: '7️⃣', weight: 2, multiplier: 30 },
+    { label: 'CHERRY', weight: 30, multiplier: 2 },
+    { label: 'LEMON', weight: 25, multiplier: 3 },
+    { label: 'GRAPE', weight: 20, multiplier: 5 },
+    { label: 'BELL', weight: 15, multiplier: 8 },
+    { label: 'DIAMOND', weight: 8, multiplier: 15 },
+    { label: 'SEVEN', weight: 2, multiplier: 30 },
 ];
 
 const TOTAL_WEIGHT = SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
@@ -75,36 +76,36 @@ export default {
         }
 
         const reels = [spinReel(), spinReel(), spinReel()];
-        const reelDisplay = `【 ${reels.map(s => s.emoji).join(' | ')} 】`;
+        const reelDisplay = `\`[ ${reels.map(s => s.label).join(' | ')} ]\``;
 
         let cashChange;
         let resultEmbed;
 
-        const allMatch = reels[0].emoji === reels[1].emoji && reels[1].emoji === reels[2].emoji;
+        const allMatch = reels[0].label === reels[1].label && reels[1].label === reels[2].label;
         const twoMatch = !allMatch && (
-            reels[0].emoji === reels[1].emoji ||
-            reels[1].emoji === reels[2].emoji ||
-            reels[0].emoji === reels[2].emoji
+            reels[0].label === reels[1].label ||
+            reels[1].label === reels[2].label ||
+            reels[0].label === reels[2].label
         );
 
         if (allMatch) {
             const amountWon = Math.floor(betAmount * reels[0].multiplier);
             cashChange = amountWon - betAmount;
             resultEmbed = successEmbed(
-                '🎰 JACKPOT!',
-                `${reelDisplay}\nTriple **${reels[0].emoji}**! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
+                'JACKPOT!',
+                `${reelDisplay}\nTriple **${reels[0].label}**! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
             );
         } else if (twoMatch) {
             const amountWon = Math.floor(betAmount * TWO_MATCH_MULTIPLIER);
             cashChange = amountWon - betAmount;
             resultEmbed = successEmbed(
-                '🎰 Small Win!',
+                'Small Win!',
                 `${reelDisplay}\nTwo matching symbols! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
             );
         } else {
             cashChange = -betAmount;
             resultEmbed = warningEmbed(
-                '🎰 No Match',
+                'No Match',
                 `${reelDisplay}\nNo matching symbols. You lost your **$${betAmount.toLocaleString()}** bet.`
             );
         }
