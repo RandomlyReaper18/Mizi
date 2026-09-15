@@ -67,7 +67,7 @@ export default {
 
         const landedOnChosen = Math.random() < (0.5 - HOUSE_EDGE);
         const result = landedOnChosen ? chosenSide : (chosenSide === 'heads' ? 'tails' : 'heads');
-        const resultEmoji = result === 'heads' ? '🪙 Heads' : '🪙 Tails';
+        const resultLabel = result === 'heads' ? 'Heads' : 'Tails';
 
         let cashChange;
         let resultEmbed;
@@ -76,14 +76,14 @@ export default {
             const amountWon = Math.floor(betAmount * WIN_PAYOUT);
             cashChange = amountWon - betAmount;
             resultEmbed = successEmbed(
-                '🎉 You Won!',
-                `The coin landed on **${resultEmoji}**, just like you called it! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
+                'You Won!',
+                `The coin landed on **${resultLabel}**, just like you called it! Your **$${betAmount.toLocaleString()}** bet paid out **$${amountWon.toLocaleString()}**!`
             );
         } else {
             cashChange = -betAmount;
             resultEmbed = warningEmbed(
-                '💔 You Lost...',
-                `The coin landed on **${resultEmoji}**. You called ${chosenSide}, so you lost your **$${betAmount.toLocaleString()}** bet.`
+                'You Lost...',
+                `The coin landed on **${resultLabel}**. You called ${chosenSide}, so you lost your **$${betAmount.toLocaleString()}** bet.`
             );
         }
 
